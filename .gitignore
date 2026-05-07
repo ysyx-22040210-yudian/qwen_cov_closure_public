@@ -1,0 +1,7 @@
+# Ignore local reconstructed outputs
+/dist/
+*.tmp
+*.log
+__pycache__/
+.pytest_cache/
+.DS_Store

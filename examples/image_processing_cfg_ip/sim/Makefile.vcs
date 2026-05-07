@@ -1,0 +1,202 @@
+SHELL := /bin/bash
+MAKEFLAGS += --no-print-directory
+SELF_MAKEFILE := $(lastword $(MAKEFILE_LIST))
+RUN_MAKE = $(MAKE) -f $(SELF_MAKEFILE)
+
+TOP       ?= image_cfg_ip_tb
+FILELIST  ?= vcs.f
+TC        ?= tc_gray
+CASE_FILE ?= cases/$(TC).in
+CASE_ROOT ?= cases
+CASE_IN_FILE ?=
+TC_LIST   ?= func_cov_cases.lst
+FUNC_COV_TEMPLATE ?= cases/tc_drop_blue.in
+FUNC_COV_PATH ?= cov
+FUNC_COV_CASES_DIR ?= cases/auto_llama
+FUNC_COV_CASE_LIST_DIR ?= .
+FUNC_COV_CASE_LIST ?= yud_auto_cases.lst
+FUNC_COV_CASE_LIST_FORMAT ?= auto_llama/{case}
+FUNC_COV_CASE_IN_FILE ?= tc_case.in
+FUNC_COV_COMPILE_CMD ?= make -f Makefile.vcs clean; make -f Makefile.vcs compile DUMP=0 COV_DIR={cov_dir} URG_RPT={urg_report}
+FUNC_COV_REGRESS_CMD ?= make -f Makefile.vcs run_lst TC_LIST={case_list} CASE_ROOT={cases_dir} CASE_IN_FILE={case_in_file} DUMP=0 COV_DIR={cov_dir} URG_RPT={urg_report}
+FUNC_COV_MAX_ITER ?= 3
+LLM_MODEL_CHOICE ?= llama
+LOCAL_LLM_MODEL ?=
+QWEN_MODEL ?= $(LOCAL_LLM_MODEL)
+QWEN_MODEL_ARG = $(if $(strip $(QWEN_MODEL)),--model $(QWEN_MODEL),)
+QWEN_TIMEOUT ?= 420
+QWEN_MAX_CROSS_CASES ?= 0
+QWEN_HINTS ?= logs/qwen_cov_hints.json
+QWEN_COV_INTERACTIVE ?= 1
+QWEN_COV_INTERACTIVE_ARG = $(if $(filter 0 false FALSE no NO,$(strip $(QWEN_COV_INTERACTIVE))),,--interactive)
+OLLAMA_BIN ?= ollama
+OLLAMA_MODELS ?= /mnt/hgfs/VMshare-2/ic_lab/ollama_models
+OLLAMA_HOST ?= 127.0.0.1:11434
+
+VCS       ?= vcs
+URG       ?= urg
+VERDI     ?= verdi
+
+BUILD_DIR ?= build/vcs
+LOG_DIR   ?= logs/vcs
+WAVE_DIR  ?= waves
+COV_DIR   ?= cov/simv.vdb
+URG_RPT   ?= cov/urgReport
+SIMV      ?= $(BUILD_DIR)/simv
+CM        ?= line+cond+fsm+tgl+branch+assert
+COV_HIER  ?= cov_hier.cfg
+DUMP      ?= 0
+
+NOVAS_HOME ?= $(VERDI_HOME)
+FSDB_PLI_DIR ?= $(NOVAS_HOME)/share/PLI/VCS/LINUX64
+FSDB_PLI_TAB ?= $(FSDB_PLI_DIR)/novas.tab
+FSDB_PLI_LIB ?= $(FSDB_PLI_DIR)/pli.a
+
+CASES := $(notdir $(basename $(wildcard cases/tc_*.in)))
+
+VCS_COMMON_OPTS = -full64 -sverilog -timescale=1ns/1ps -debug_access+all -kdb -lca
+VCS_COV_OPTS    = -cm $(CM) -cm_dir $(COV_DIR)
+SIM_COV_OPTS    = -cm $(CM) -cm_dir $(COV_DIR)
+ifneq ($(wildcard $(COV_HIER)),)
+VCS_COV_OPTS   += -cm_hier $(COV_HIER)
+endif
+
+ifeq ($(DUMP),1)
+ifeq ($(wildcard $(FSDB_PLI_TAB)),)
+$(error DUMP=1 requires Verdi FSDB PLI. Set NOVAS_HOME, VERDI_HOME, or FSDB_PLI_DIR)
+endif
+ifeq ($(wildcard $(FSDB_PLI_LIB)),)
+$(error DUMP=1 requires Verdi FSDB PLI. Set NOVAS_HOME, VERDI_HOME, or FSDB_PLI_DIR)
+endif
+VCS_DUMP_OPTS = +define+FSDB_DUMP -P $(FSDB_PLI_TAB) $(FSDB_PLI_LIB)
+SIM_DUMP_OPTS = +FSDB_DUMP +FSDB_FILE=$(WAVE_DIR)/$(TC).fsdb
+endif
+
+.PHONY: help compile run run_lst all all_cases cov_report func_cov_status func_cov_gen func_cov_close qwen_cov_close wave verdi_wave verdi_cov clean $(CASES)
+
+help:
+	@echo ""
+	@echo "Usage: make -f Makefile.vcs <target> [TC=<case>] [DUMP=1]"
+	@echo ""
+	@echo "Targets:"
+	@echo "  compile     Compile DUT and case-file testbench with VCS"
+	@echo "  run         Run one case, default TC=$(TC)"
+	@echo "  run_lst     Run cases listed in TC_LIST=$(TC_LIST)"
+	@echo "  all         Compile and run one case"
+	@echo "  all_cases   Compile once, run all cases, and build URG coverage"
+	@echo "  func_cov_status  Print current functional coverage collection status"
+	@echo "  func_cov_gen     Generate directed config cases for functional coverage closure"
+	@echo "  func_cov_close   Generate/run directed cases until GROUP functional coverage reaches 100%"
+	@echo "  qwen_cov_close   Run LLM-assisted wrapper, then deterministic coverage closure"
+	@echo "  wave        Compile/run one case with FSDB dump and open Verdi"
+	@echo "  verdi_cov   Open coverage DB with Verdi"
+	@echo "  clean       Remove generated files"
+	@echo ""
+	@echo "Cases: $(CASES)"
+
+compile:
+	@mkdir -p $(BUILD_DIR) $(LOG_DIR) $(WAVE_DIR) cov
+	$(VCS) $(VCS_COMMON_OPTS) $(VCS_COV_OPTS) $(VCS_DUMP_OPTS) \
+	      -f $(FILELIST) -top $(TOP) -o $(SIMV) -l $(LOG_DIR)/compile.log
+
+run:
+	@mkdir -p $(LOG_DIR) $(WAVE_DIR) cov
+	$(SIMV) +CASE_FILE=$(CASE_FILE) $(SIM_DUMP_OPTS) \
+	        $(SIM_COV_OPTS) -cm_name $(TC) -l $(LOG_DIR)/$(TC).log
+	@grep -q "TEST_PASS" $(LOG_DIR)/$(TC).log
+
+run_lst:
+	@test -f "$(TC_LIST)" || { echo "TC_LIST not found: $(TC_LIST)" >&2; exit 1; }
+	@mkdir -p $(LOG_DIR) $(WAVE_DIR) cov
+	@set -e; \
+	while IFS= read -r raw || [ -n "$$raw" ]; do \
+	  line=$${raw%%#*}; \
+	  line=$$(printf '%s' "$$line" | sed 's/\r$$//' | xargs); \
+	  [ -z "$$line" ] && continue; \
+	  set -- $$line; \
+	  token=$$1; \
+	  if [ $$# -ge 2 ]; then \
+	    case "$$2" in */*|*.in) token=$$2 ;; esac; \
+	  fi; \
+	  case "$$token" in \
+	    */*) case_file=$$token; tc=$$(basename "$$case_file" .in) ;; \
+	    *.in) tc=$$(basename "$$token" .in); case_file=cases/$$tc.in ;; \
+	    *) tc=$$token; case_file=cases/$$tc.in ;; \
+	  esac; \
+	  if [ -n "$(CASE_IN_FILE)" ]; then \
+	    if [ -d "$$token" ]; then case_file="$$token/$(CASE_IN_FILE)"; tc=$$(basename "$$token"); fi; \
+	    if [ ! -f "$$case_file" ] && [ -d "$(CASE_ROOT)/$$token" ]; then case_file="$(CASE_ROOT)/$$token/$(CASE_IN_FILE)"; tc=$$(basename "$$token"); fi; \
+	    if [ ! -f "$$case_file" ] && [ -d "$(CASE_ROOT)/$$case_file" ]; then case_file="$(CASE_ROOT)/$$case_file/$(CASE_IN_FILE)"; tc=$$(basename "$$case_file"); fi; \
+	    if [ ! -f "$$case_file" ] && [ -f "$$token/$(CASE_IN_FILE)" ]; then case_file="$$token/$(CASE_IN_FILE)"; tc=$$(basename "$$token"); fi; \
+	  fi; \
+	  if [ ! -f "$$case_file" ] && [ -f "$(CASE_ROOT)/$$case_file" ]; then case_file="$(CASE_ROOT)/$$case_file"; fi; \
+	  if [ ! -f "$$case_file" ] && [ -f "$(CASE_ROOT)/$$case_file.in" ]; then case_file="$(CASE_ROOT)/$$case_file.in"; fi; \
+	  if [ ! -f "$$case_file" ] && [ -f "$(CASE_ROOT)/$$tc.in" ]; then case_file="$(CASE_ROOT)/$$tc.in"; fi; \
+	  if [ -n "$(CASE_IN_FILE)" ] && [ ! -f "$$case_file" ] && [ -f "$$case_file/$(CASE_IN_FILE)" ]; then case_file="$$case_file/$(CASE_IN_FILE)"; fi; \
+	  if [ ! -f "$$case_file" ] && [ -f "$$case_file.in" ]; then case_file=$$case_file.in; fi; \
+	  if [ ! -f "$$case_file" ]; then echo "Case file not found for '$$token': $$case_file" >&2; exit 1; fi; \
+	  echo "Running $$tc from $$case_file"; \
+	  $(RUN_MAKE) run TC=$$tc CASE_FILE=$$case_file DUMP=$(DUMP) COV_DIR=$(COV_DIR); \
+	done < "$(TC_LIST)"
+	@$(RUN_MAKE) cov_report COV_DIR=$(COV_DIR) URG_RPT=$(URG_RPT)
+
+all:
+	@$(RUN_MAKE) compile DUMP=$(DUMP)
+	@$(RUN_MAKE) run TC=$(TC) CASE_FILE=$(CASE_FILE) DUMP=$(DUMP)
+
+$(CASES):
+	@$(RUN_MAKE) all TC=$@ CASE_FILE=cases/$@.in DUMP=$(DUMP)
+
+all_cases:
+	@$(RUN_MAKE) clean
+	@$(RUN_MAKE) compile DUMP=0
+	@set -e; for tc in $(CASES); do \
+	  $(RUN_MAKE) run TC=$$tc CASE_FILE=cases/$$tc.in DUMP=0; \
+	done
+	@$(RUN_MAKE) cov_report
+	@echo "All cases passed: $(CASES)"
+
+cov_report:
+	@mkdir -p cov
+	$(URG) -full64 -dir $(COV_DIR) -report $(URG_RPT) -format both | tee $(LOG_DIR)/urg.log
+
+func_cov_status:
+	python3 scripts/auto_func_cov.py status --template-case $(FUNC_COV_TEMPLATE) --cov-path $(FUNC_COV_PATH) --urg-cmd $(URG)
+
+func_cov_gen:
+	python3 scripts/auto_func_cov.py generate --template-case $(FUNC_COV_TEMPLATE) --cov-path $(FUNC_COV_PATH) --urg-cmd $(URG) \
+	  --cases-dir $(FUNC_COV_CASES_DIR) --case-list-dir $(FUNC_COV_CASE_LIST_DIR) --case-list $(FUNC_COV_CASE_LIST) --case-list-format '$(FUNC_COV_CASE_LIST_FORMAT)' \
+	  --case-in-file '$(FUNC_COV_CASE_IN_FILE)'
+
+func_cov_close:
+	python3 scripts/auto_func_cov.py close --template-case $(FUNC_COV_TEMPLATE) --cov-path $(FUNC_COV_PATH) --urg-cmd $(URG) \
+	  --cases-dir $(FUNC_COV_CASES_DIR) --case-list-dir $(FUNC_COV_CASE_LIST_DIR) --case-list $(FUNC_COV_CASE_LIST) --case-list-format '$(FUNC_COV_CASE_LIST_FORMAT)' \
+	  --case-in-file '$(FUNC_COV_CASE_IN_FILE)' \
+	  --compile-cmd '$(FUNC_COV_COMPILE_CMD)' \
+	  --regress-cmd '$(FUNC_COV_REGRESS_CMD)' \
+	  --max-iterations $(FUNC_COV_MAX_ITER)
+
+qwen_cov_close:
+	python3 scripts/qwen_cov_agent.py $(QWEN_COV_INTERACTIVE_ARG) --sim-dir $(CURDIR) --template-case $(FUNC_COV_TEMPLATE) --cov-path $(FUNC_COV_PATH) \
+	  --filelist $(FILELIST) --qwen-hints $(QWEN_HINTS) \
+	  --model-choice $(LLM_MODEL_CHOICE) $(QWEN_MODEL_ARG) --qwen-timeout $(QWEN_TIMEOUT) --max-cross-cases $(QWEN_MAX_CROSS_CASES) \
+	  --ollama-bin $(OLLAMA_BIN) --ollama-host $(OLLAMA_HOST) --ollama-models $(OLLAMA_MODELS) \
+	  --cases-dir $(FUNC_COV_CASES_DIR) --case-list-dir $(FUNC_COV_CASE_LIST_DIR) --case-list $(FUNC_COV_CASE_LIST) --case-list-format '$(FUNC_COV_CASE_LIST_FORMAT)' \
+	  --case-in-file '$(FUNC_COV_CASE_IN_FILE)' \
+	  --compile-cmd '$(FUNC_COV_COMPILE_CMD)' \
+	  --regress-cmd '$(FUNC_COV_REGRESS_CMD)' \
+	  --max-iterations $(FUNC_COV_MAX_ITER)
+
+wave:
+	@$(RUN_MAKE) all TC=$(TC) CASE_FILE=$(CASE_FILE) DUMP=1
+	@$(RUN_MAKE) verdi_wave TC=$(TC)
+
+verdi_wave:
+	$(VERDI) -sv -f $(FILELIST) -top $(TOP) -ssf $(WAVE_DIR)/$(TC).fsdb &
+
+verdi_cov:
+	$(VERDI) -cov -covdir $(COV_DIR) &
+
+clean:
+	@rm -rf $(BUILD_DIR) $(LOG_DIR) $(WAVE_DIR) $(COV_DIR) $(URG_RPT)
+	@rm -rf csrc simv* *.daidir *.vdb ucli.key verdiLog novas.* DVEfiles 64

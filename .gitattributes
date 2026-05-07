@@ -1,0 +1,11 @@
+# Keep line endings stable for scripts and split archives
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.part-* -text
+*.tar -text
+*.gguf -text
+*.jpg -text
+*.webp -text
+*.pdf -text
