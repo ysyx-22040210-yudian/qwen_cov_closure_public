@@ -3,6 +3,7 @@ from __future__ import print_function
 
 import argparse
 import glob
+import io
 import json
 import os
 import re
@@ -128,7 +129,7 @@ def resolve_path(base_dir, path):
 
 
 def read_text(path, limit=0):
-    with open(path, "r") as handle:
+    with io.open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
         text = handle.read()
     if limit and len(text) > limit:
         return text[:limit] + "\n... truncated ...\n"
@@ -139,7 +140,7 @@ def write_text(path, text):
     parent = os.path.dirname(path)
     if parent and not os.path.isdir(parent):
         os.makedirs(parent)
-    with open(path, "w") as handle:
+    with io.open(path, "w", encoding="utf-8") as handle:
         handle.write(text)
 
 
@@ -1558,7 +1559,7 @@ def confirm_after_analysis(args, sim_dir):
 
 def tail_text(path, max_lines=40):
     try:
-        with open(path, "r") as handle:
+        with io.open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
             lines = handle.readlines()
         return "".join(lines[-max_lines:])
     except Exception:

@@ -5,13 +5,13 @@
 # Compiled at: 2026-05-06 22:47:40
 # Size of source mod 2**32: 52212 bytes
 from __future__ import print_function
-import argparse, json, os, re, subprocess, sys
+import argparse, io, json, os, re, subprocess, sys
 DEFAULT_DASHBOARD = "auto"
 DEFAULT_GRPINFO = "auto"
 DEFAULT_COV_PATH = "cov"
 
 def read_text(path):
-    with open(path, "r") as handle:
+    with io.open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
         return handle.read()
 
 
@@ -31,7 +31,7 @@ def load_hints(path):
     if not os.path.exists(path):
         return {}
     try:
-        with open(path, "r") as handle:
+        with io.open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
             data = json.load(handle)
     except Exception as exc:
         print("Ignoring invalid hints file {}: {}".format(path, exc), file=sys.stderr)
@@ -483,7 +483,7 @@ def strip_comment(line):
 
 def parse_case_template(path):
     entries = []
-    with open(path, "r") as handle:
+    with io.open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
         for raw_line in handle:
             body = strip_comment(raw_line).strip()
             if not body:
@@ -1372,7 +1372,7 @@ def write_case_list(sim_dir, cases_dir, names, case_list, line_format, case_list
         if not os.path.isdir(parent):
             os.makedirs(parent)
     lines = [render_case_list_line(line_format, record) for record in records]
-    with open(list_path, "w") as handle:
+    with io.open(list_path, "w", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + ("\n" if lines else ""))
     print("Generated tc case list {} with format '{}'".format(list_path, line_format))
     return list_path
@@ -1416,7 +1416,7 @@ def write_cases(sim_dir, template_case, cover_vars, prefix, cases_dir, max_cross
             path = os.path.join(case_dir, case_in_file)
         else:
             path = os.path.join(output_dir, "{}.in".format(name))
-        with open(path, "w") as handle:
+        with io.open(path, "w", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
 
     print("Generated {} functional coverage closure cases under {}".format(len(names), output_dir))
