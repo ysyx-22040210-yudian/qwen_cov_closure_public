@@ -60,12 +60,12 @@ make -f Makefile.vcs qwen_cov_close
 2) tc case template file
 3) coverage path
 4) generated tc case directory
-5) generated tc case lst directory
-6) generated tc case lst filename
-7) tc case lst line format
-8) fixed .in filename inside each case dir
-9) compile command
-10) regression command
+5) fixed .in filename inside each case dir
+6) compile command
+7) regression command
+8) optional/generated tc case lst filename
+9) generated tc case lst directory
+10) tc case lst line format
 11) max closure iterations
 12) max cases per cross coverpoint
 13) target GROUP coverage percent
@@ -77,11 +77,35 @@ make -f Makefile.vcs qwen_cov_close
 
 - `template-case` 如果是用户输入的绝对文件路径，工具会保持原样，不会自动改写。
 - `cases-dir` 是生成 case 的根目录，工具不会因为回归执行目录不同而擅自改掉它。
-- `case-list-dir` 是生成 lst 文件的位置。
-- `case-list-format` 描述 lst 每一行写什么。
+- `case-list-dir` 是生成 lst 文件的位置；只有回归命令使用 `{case_list}` 时才必须填写。
+- `case-list-format` 描述 lst 每一行写什么；不使用 lst 的项目可以留空。
 - `case-in-file` 描述每个 case 目录内部固定的 `.in` 文件名。
 
-## 4. 目录型 case 模式
+## 4. 回归命令模式
+
+工具会根据 `--regress-cmd` 自动选择执行方式：
+
+| 模式 | 回归命令写法 | 执行方式 |
+| --- | --- | --- |
+| lst 模式 | 包含 `{case_list}` | 生成/更新 lst 后执行一次回归命令 |
+| 逐 case 模式 | 包含 `{case}`、`{case_file}`、`{case_file_no_ext}`、`{case_dir}` 等 | 对每个生成 case 分别执行一次回归命令 |
+| 项目级模式 | 不包含 lst/case 占位符 | 生成 case 后原样执行一次回归命令，适合项目自身会扫描 case 目录或使用固定回归入口的情况 |
+
+逐 case 示例：
+
+```bash
+--regress-cmd 'make -f Makefile.vcs run TC={case_file_no_ext} DUMP=0 COV_DIR={cov_dir} URG_RPT={urg_report}'
+```
+
+项目级示例：
+
+```bash
+--regress-cmd 'make -f Makefile.vcs regress DUMP=0 COV_DIR={cov_dir} URG_RPT={urg_report}'
+```
+
+项目级模式下工具不会假设回归命令读取 lst；你需要保证该命令能发现 `--cases-dir` 下生成的 case，或者项目 Makefile 已经固定使用该目录。
+
+## 5. 目录型 case 模式
 
 现在支持这种结构：
 
@@ -123,7 +147,7 @@ cases/auto_llama/tc_auto_func_cov_00/config.in
 
 如果 `--case-in-file` 为空，则保持旧模式：每个 case 直接是一个 `.in` 文件，例如 `cases/auto_llama/tc_auto_func_cov_00.in`。
 
-## 5. case 模板格式
+## 6. case 模板格式
 
 case 文件每一行格式：
 
@@ -153,7 +177,7 @@ threshold_enable             0            0
 threshold_value              1            (0,255)
 ```
 
-## 6. 覆盖率输入
+## 7. 覆盖率输入
 
 用户只需要输入覆盖率路径，例如：
 
@@ -180,7 +204,7 @@ cov/simv.vdb
 urg -full64 -dir cov/simv.vdb -report cov/urgReport -format both
 ```
 
-## 7. 覆盖率映射提示说明
+## 8. 覆盖率映射提示说明
 
 运行时可能看到：
 
@@ -215,7 +239,7 @@ Informational: case items with code references but no matching coverpoint:
 
 这不是“只识别到了这些项”，而是这些项没有功能覆盖率 coverpoint。通常 `case_name`、`random_seed`、随机 pixel 数据项不需要作为功能覆盖率配置项。
 
-## 8. LLM 的作用
+## 9. LLM 的作用
 
 LLM 不是替代确定性覆盖率脚本，而是做项目适配：
 
@@ -224,7 +248,7 @@ LLM 不是替代确定性覆盖率脚本，而是做项目适配：
 - 在输入格式不准确或回归失败时，给出修正建议。
 - 必要时生成受控 patch，修改项目适配代码。交互模式会先确认再应用。
 
-## 9. 常用命令
+## 10. 常用命令
 
 交互运行：
 
@@ -257,7 +281,7 @@ bash run_qwen_cov_agent.sh \
 bash run_qwen_cov_agent.sh --interactive --analysis-only
 ```
 
-## 10. 打包仓库分卷恢复
+## 11. 打包仓库分卷恢复
 
 如果该工具是从 GitHub public 仓库下载的，并且 portable 包被拆成多个小于 100MB 的分卷，进入仓库后执行：
 
@@ -277,7 +301,7 @@ dist/qwen_cov_closure_linux_portable_20260507_224310.tar
 tar -xf dist/qwen_cov_closure_linux_portable_20260507_224310.tar -C dist
 ```
 
-## 11. 注意事项
+## 12. 注意事项
 
 - public GitHub 普通仓库单文件大小限制是 100MB，因此大模型和运行时必须分卷提交。
 - 如果从 Windows 拷贝到 Linux，启动脚本会自动修复 Ollama 相关执行权限和 `.so` 链接。

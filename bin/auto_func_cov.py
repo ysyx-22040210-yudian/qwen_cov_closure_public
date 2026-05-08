@@ -1450,10 +1450,18 @@ def render_command(template, sim_dir, case_name_value, case_file_value, cov_dir_
     cases_dir_abs = resolve_path(sim_dir, cases_dir_value) if cases_dir_value else ""
     case_dir_value = os.path.dirname(case_file_value) if case_file_value else ""
     case_dir_abs = resolve_path(sim_dir, case_dir_value) if case_dir_value else ""
+    case_file_no_ext = os.path.splitext(case_file_value)[0] if case_file_value else ""
+    case_file_abs_no_ext = os.path.splitext(case_file_abs)[0] if case_file_abs else ""
+    case_file_basename = os.path.basename(case_file_value) if case_file_value else ""
+    case_file_basename_no_ext = os.path.splitext(case_file_basename)[0] if case_file_basename else ""
     context = {"sim_dir": sim_dir, 
      "case": case_name_value, 
      "case_file": case_file_value, 
+     "case_file_no_ext": case_file_no_ext,
      "case_file_abs": case_file_abs, 
+     "case_file_abs_no_ext": case_file_abs_no_ext,
+     "case_file_basename": case_file_basename,
+     "case_file_basename_no_ext": case_file_basename_no_ext,
      "case_dir": case_dir_value, 
      "case_dir_abs": case_dir_abs, 
      "case_in_file": case_in_file_value,
@@ -1482,6 +1490,28 @@ def run_shell(command, cwd):
 def run_commands(commands, sim_dir, case_name_value, case_file_value, cov_dir_value, urg_report_value, case_list_value="", cases_dir_value="", case_in_file_value=""):
     for command in commands:
         run_shell(render_command(command, sim_dir, case_name_value or "", case_file_value or "", cov_dir_value, urg_report_value, case_list_value or "", cases_dir_value or "", case_in_file_value or ""), sim_dir)
+
+
+def command_uses_case_list(command):
+    return "{case_list" in str(command or "")
+
+
+def command_uses_case(command):
+    text = str(command or "")
+    tokens = [
+     "{case}", 
+     "{case_file", 
+     "{case_dir", 
+     "{case_in_file}"]
+    return any(token in text for token in tokens)
+
+
+def regress_command_mode(command):
+    if command_uses_case_list(command):
+        return "list"
+    if command_uses_case(command):
+        return "case"
+    return "plain"
 
 
 def single_command(text):
@@ -1559,24 +1589,45 @@ def parse_current_cover_vars(args, sim_dir, hints):
     return cover_vars
 
 
-def run_regress_commands(args, sim_dir, case_list_path, case_root):
+def run_regress_commands(args, sim_dir, case_list_path, case_root, generated_cases_dir, case_names):
     cov_dir, urg_report = command_cov_paths(sim_dir, args.cov_path)
     case_list_rel = os.path.relpath(case_list_path, sim_dir) if case_list_path else args.case_list
-    run_commands(single_command(args.regress_cmd), sim_dir, "", "", cov_dir, urg_report, case_list_rel, case_root, args.case_in_file)
-    run_commands(split_commands(args.post_run), sim_dir, "", "", cov_dir, urg_report, case_list_rel, case_root, args.case_in_file)
+    mode = regress_command_mode(args.regress_cmd)
+    if mode == "list":
+        if not case_list_rel:
+            print("Regression command uses {case_list}, but --case-list is empty.", file=sys.stderr)
+            raise RuntimeError("missing case list for regression command")
+        print("Regression dispatch mode: list ({case_list})")
+        run_commands(single_command(args.regress_cmd), sim_dir, "", "", cov_dir, urg_report, case_list_rel, case_root, args.case_in_file)
+        post_cases_dir = case_root
+    elif mode == "case":
+        print("Regression dispatch mode: per-case ({case}/{case_file})")
+        for record in case_records(sim_dir, generated_cases_dir, case_names, args.case_in_file):
+            run_commands(single_command(args.regress_cmd), sim_dir, record["case"], record["case_file"], cov_dir, urg_report, case_list_rel, generated_cases_dir, args.case_in_file)
+        post_cases_dir = generated_cases_dir
+    else:
+        print("Regression dispatch mode: project-level command without lst/case placeholders")
+        print("Generated cases are under {}; ensure the regression command discovers or uses that directory.".format(generated_cases_dir))
+        run_commands(single_command(args.regress_cmd), sim_dir, "", "", cov_dir, urg_report, case_list_rel, generated_cases_dir, args.case_in_file)
+        post_cases_dir = generated_cases_dir
+    run_commands(split_commands(args.post_run), sim_dir, "", "", cov_dir, urg_report, case_list_rel, post_cases_dir, args.case_in_file)
     if not split_commands(args.post_run):
         generate_urg_report(sim_dir, args.cov_path, args.urg_cmd, True)
 
 
 def run_closure_with_regress_cmd(args, sim_dir, template_case, cover_vars, hints):
-    if not args.case_list:
-        print("close mode with --regress-cmd requires --case-list, for example xxxx.lst.", file=sys.stderr)
+    mode = regress_command_mode(args.regress_cmd)
+    if mode == "list" and not args.case_list:
+        print("close mode with a {case_list} regression command requires --case-list, for example xxxx.lst.", file=sys.stderr)
         return 1
     else:
-        line_format = resolve_case_list_format(args.case_list_format, hints, args.case_in_file)
-        generated_cases_dir = effective_cases_dir(args.cases_dir, line_format, sim_dir, template_case)
-        case_root = effective_case_root_for_lst(sim_dir, template_case, generated_cases_dir, line_format)
-        print("Case root passed to regression command: {}".format(case_root))
+        line_format = resolve_case_list_format(args.case_list_format, hints, args.case_in_file) if args.case_list else ""
+        generated_cases_dir = effective_cases_dir(args.cases_dir, line_format, sim_dir, template_case) if args.case_list else args.cases_dir or template_case_root(sim_dir, template_case) or "cases"
+        case_root = effective_case_root_for_lst(sim_dir, template_case, generated_cases_dir, line_format) if args.case_list else generated_cases_dir
+        if args.case_list:
+            print("Case root passed to regression command: {}".format(case_root))
+        else:
+            print("No case lst requested; generated case directory: {}".format(generated_cases_dir))
         print("Current coverage before adjustment:")
         group = print_status(sim_dir, args.dashboard, args.grpinfo, args.cov_path, args.urg_cmd, args.status_limit)
         if group is not None and group + 1e-06 >= args.target:
@@ -1602,7 +1653,7 @@ def run_closure_with_regress_cmd(args, sim_dir, template_case, cover_vars, hints
                     continue
 
             case_list_path = write_case_list(sim_dir, generated_cases_dir, all_cases, args.case_list, line_format, args.case_list_dir, args.case_in_file)
-            run_regress_commands(args, sim_dir, case_list_path, case_root)
+            run_regress_commands(args, sim_dir, case_list_path, case_root, generated_cases_dir, all_cases)
             print("Coverage after adjustment iteration {}:".format(iteration + 1))
             group = print_status(sim_dir, args.dashboard, args.grpinfo, args.cov_path, args.urg_cmd, args.status_limit)
             if group is not None and group + 1e-06 >= args.target:
@@ -1632,8 +1683,8 @@ def main():
     parser.add_argument("--run-case", default="", help="required by close mode; may use {case}, {case_file}, {cov_dir}, {urg_report}")
     parser.add_argument("--post-run", default="", help="optional report command template; empty means auto-run urg from --cov-path")
     parser.add_argument("--compile-cmd", default="", help="project compile command; may use {sim_dir}, {cov_dir}, {urg_report}, {case_list}, {cases_dir}")
-    parser.add_argument("--regress-cmd", default="", help="project regression command rerun after generated cases/lst are updated")
-    parser.add_argument("--case-list", default="", help="tc case lst filename/path generated from the new cases, for example xxxx.lst")
+    parser.add_argument("--regress-cmd", default="", help="project regression command rerun after generated cases are updated; use {case_list} for lst mode, {case}/{case_file} for per-case mode, or no placeholder for project-level mode")
+    parser.add_argument("--case-list", default="", help="optional tc case lst filename/path generated from the new cases, for example xxxx.lst; required only when --regress-cmd uses {case_list}")
     parser.add_argument("--case-list-dir", default="", help="directory where the generated tc case lst file is written; ignored when --case-list is absolute or already contains a directory")
     parser.add_argument("--case-list-format", default="auto", help="lst line format; auto uses LLM hints, fallback {case_file}")
     parser.add_argument("--case-in-file", default="", help="fixed .in filename inside each generated case directory; empty keeps legacy cases_dir/case_name.in layout")

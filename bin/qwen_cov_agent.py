@@ -389,6 +389,29 @@ def line_format_uses_bare_case(line_format):
     return "{case}" in text and not line_format_uses_case_file(text)
 
 
+def command_uses_case_list(command):
+    return "{case_list" in str(command or "")
+
+
+def command_uses_case(command):
+    text = str(command or "")
+    tokens = [
+        "{case}",
+        "{case_file",
+        "{case_dir",
+        "{case_in_file}",
+    ]
+    return any(token in text for token in tokens)
+
+
+def regress_command_mode(command):
+    if command_uses_case_list(command):
+        return "list"
+    if command_uses_case(command):
+        return "case"
+    return "plain"
+
+
 def relpath_if_under(path, root):
     path = os.path.abspath(path)
     root = os.path.abspath(root)
@@ -469,6 +492,8 @@ def join_cases_dir_and_lst_parent(cases_dir, lst_parent):
 
 
 def expected_generated_cases_dir(args, sim_dir):
+    if not args.case_list:
+        return args.cases_dir or template_case_root(sim_dir, args.template_case) or "cases"
     inferred = infer_cases_dir_from_case_list_format(args.case_list_format)
     if inferred:
         return join_cases_dir_and_lst_parent(args.cases_dir or template_case_root(sim_dir, args.template_case) or "cases", inferred)
@@ -476,6 +501,8 @@ def expected_generated_cases_dir(args, sim_dir):
 
 
 def expected_case_root_for_lst(args, sim_dir):
+    if not args.case_list:
+        return expected_generated_cases_dir(args, sim_dir)
     inferred = infer_cases_dir_from_case_list_format(args.case_list_format)
     if inferred:
         stripped = strip_component_suffix(expected_generated_cases_dir(args, sim_dir), inferred)
@@ -1299,14 +1326,24 @@ def apply_interactive_args(args):
     args.template_case = prompt_value("2) tc case template file", args.template_case)
     args.cov_path = prompt_value("3) coverage path", args.cov_path)
     args.cases_dir = prompt_value("4) generated tc case directory", args.cases_dir or "cases/auto_llama")
-    args.case_list_dir = prompt_value("5) generated tc case lst directory", args.case_list_dir or ".")
-    args.case_list = prompt_value("6) generated tc case lst filename", args.case_list or "auto_func_cov_cases.lst")
-    args.case_list_format = normalize_case_list_format(prompt_value("7) tc case lst line format", args.case_list_format or "{case}"))
-    while not valid_case_list_format(args.case_list_format):
-        args.case_list_format = normalize_case_list_format(prompt_value("7) tc case lst line format", "{case}"))
-    args.case_in_file = prompt_value("8) fixed .in filename inside each case dir", args.case_in_file)
-    args.compile_cmd = prompt_value("9) compile command", args.compile_cmd)
-    args.regress_cmd = prompt_value("10) regression command", args.regress_cmd)
+    args.case_in_file = prompt_value("5) fixed .in filename inside each case dir", args.case_in_file)
+    args.compile_cmd = prompt_value("6) compile command", args.compile_cmd)
+    args.regress_cmd = prompt_value("7) regression command", args.regress_cmd, "   Use {case_list} for lst mode, {case}/{case_file} for per-case mode, or no placeholder for project-level regression.")
+    mode = regress_command_mode(args.regress_cmd)
+    if mode == "list":
+        args.case_list_dir = prompt_value("8) generated tc case lst directory", args.case_list_dir or ".")
+        args.case_list = prompt_value("9) generated tc case lst filename", args.case_list or "auto_func_cov_cases.lst")
+        args.case_list_format = normalize_case_list_format(prompt_value("10) tc case lst line format", args.case_list_format or "{case}"))
+        while not valid_case_list_format(args.case_list_format):
+            args.case_list_format = normalize_case_list_format(prompt_value("10) tc case lst line format", "{case}"))
+    else:
+        print("Regression command mode: {}. A case lst is optional in this mode.".format(mode))
+        args.case_list = prompt_value("8) optional generated tc case lst filename (blank skips lst)", args.case_list)
+        if args.case_list:
+            args.case_list_dir = prompt_value("9) generated tc case lst directory", args.case_list_dir or ".")
+            args.case_list_format = normalize_case_list_format(prompt_value("10) tc case lst line format", args.case_list_format or "{case}"))
+            while not valid_case_list_format(args.case_list_format):
+                args.case_list_format = normalize_case_list_format(prompt_value("10) tc case lst line format", "{case}"))
     args.max_iterations = prompt_value("11) max closure iterations", args.max_iterations or "3")
     args.max_cross_cases = prompt_value("12) max cases per cross coverpoint", args.max_cross_cases or "0")
     args.target = prompt_value("13) target GROUP coverage percent", args.target or "100")
@@ -1369,12 +1406,23 @@ def validate_args(args):
     normalize_numeric_field(args, "max_iterations", "3")
     normalize_numeric_field(args, "max_cross_cases", "0")
     normalize_numeric_field(args, "target", "100", True)
-    if args.regress_cmd and args.case_list and "{case_list}" not in args.regress_cmd:
-        print("Warning: regression command does not contain {case_list}; generated lst may not be used.", file=sys.stderr)
+    mode = regress_command_mode(args.regress_cmd)
+    if args.regress_cmd and mode == "list" and not args.case_list:
         if args.interactive:
-            answer = prompt_value("Edit regression command now? y/n", "y")
-            if truthy(answer):
-                args.regress_cmd = prompt_value("regression command", args.regress_cmd)
+            print("Regression command uses {case_list}, so a generated tc case lst filename is required.")
+            args.case_list = prompt_value("generated tc case lst filename", "auto_func_cov_cases.lst")
+            args.case_list_dir = prompt_value("generated tc case lst directory", args.case_list_dir or ".")
+            args.case_list_format = normalize_case_list_format(prompt_value("tc case lst line format", args.case_list_format or "{case}"))
+            while not valid_case_list_format(args.case_list_format):
+                args.case_list_format = normalize_case_list_format(prompt_value("tc case lst line format", "{case}"))
+        else:
+            print("Regression command uses {case_list}; please set --case-list.", file=sys.stderr)
+            return False
+    elif args.regress_cmd and mode == "case":
+        print("Regression command will run once per generated case because it uses {case}/{case_file}.")
+    elif args.regress_cmd and mode == "plain":
+        print("Regression command has no {case_list}/{case}/{case_file} placeholder; generated cases will be written, then the command will run once per iteration.")
+        print("Make sure that command discovers the generated case directory or uses project defaults.")
     return True
 
 
@@ -1423,6 +1471,7 @@ def print_execution_plan(args, sim_dir, command):
         ("fixed .in filename inside each case dir", args.case_in_file),
         ("compile command", args.compile_cmd),
         ("regression command", args.regress_cmd),
+        ("regression dispatch mode", regress_command_mode(args.regress_cmd)),
         ("target GROUP coverage", args.target),
         ("max iterations", args.max_iterations),
         ("max cross cases", args.max_cross_cases),
@@ -1637,7 +1686,7 @@ def repair_after_failure(args, sim_dir, return_code):
     print("")
     print("Coverage closure command failed with exit status {}.".format(return_code))
     print("The Python traceback is suppressed; check the command output above and recent logs under {}.".format(os.path.relpath(resolve_path(sim_dir, "logs"), sim_dir)))
-    print("Common fixes: correct the template case path, use a coverage path under the active project, keep {case_list} in the regression command, and match the lst line format to run_lst.")
+    print("Common fixes: correct the template case path, use a coverage path under the active project, and make the regression command match one supported mode: {case_list} lst mode, {case}/{case_file} per-case mode, or project-level auto-discovery mode.")
     llm_failure_advice(args, sim_dir, return_code)
     if not args.interactive:
         return False
